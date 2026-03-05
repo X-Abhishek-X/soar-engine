@@ -1,67 +1,123 @@
 # soar-engine
 
-i threw this together to automate a few incident response tasks. dealing with raw IDS alerts manually gets old fast, so this basically just listens for webhooks, parses out the bad IPs, and runs an automated playbook on them. 
+A lightweight async SOAR engine that automates incident response. When an IDS alert fires, you don't want a human manually querying VirusTotal and copy-pasting IPs into Slack at 3am — this handles that.
 
-the main goal was to make sure it doesn't drop alerts if there's a spike in traffic. so instead of blocking the main thread while querying external APIs, the webhook receiver just throws the payload into a redis queue and immediately returns a 200 OK. then, background celery workers pick up the jobs asynchronously.
+The core design decision: the webhook receiver never blocks. It takes the alert, drops it into a Redis queue, and immediately returns `202 Accepted`. Background Celery workers pick up the job asynchronously — so even if VirusTotal is slow or Slack is having issues, you don't miss alerts during traffic spikes.
 
-right now, the playbook just checks the offending IP against virustotal and throws an alert into a slack channel. easy to expand though.
-
-## stack
-
-- **fastapi**: for the webhook receiver endpoint
-- **celery & redis**: handles the asynchronous background queues
-- **python**: for the playbook logic 
-
-## running it locally
-
-1. **get redis running**
-   i included a compose file if you just want to run it in docker:
-   ```bash
-   docker-compose up -d
-   ```
-
-2. **set up the python env**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-3. **api keys**
-   create a `.env` file in the root. you can skip this if you just want to test it (it'll mock the responses), but to actually use it you'll need:
-   ```text
-   REDIS_URL=redis://localhost:6379/0
-   VIRUSTOTAL_API_KEY=your_vt_key
-   SLACK_WEBHOOK_URL=your_slack_webhook
-   ```
-
-## firing it up
-
-you'll need to run the worker and the api server separately.
-
-**terminal 1 (the worker):**
-```bash
-celery -A tasks worker --loglevel=info
+```
+IDS / SIEM
+    │
+    ▼ POST /api/v1/webhook/alert
+┌─────────────┐
+│  FastAPI    │  →  202 Accepted (immediate)
+│  receiver   │
+└──────┬──────┘
+       │ enqueue
+       ▼
+┌─────────────┐
+│    Redis    │  (job queue, survives restarts)
+└──────┬──────┘
+       │ dequeue
+       ▼
+┌─────────────────────────────────────┐
+│  Celery worker — run_playbook()     │
+│                                     │
+│  malware  →  VirusTotal lookup      │
+│  brute    →  Slack alert + block    │
+│  default  →  log + Slack notify     │
+└─────────────────────────────────────┘
 ```
 
-**terminal 2 (the api):**
+---
+
+### Running locally
+
+The fastest path is Docker — Redis + API + worker in one command:
+
 ```bash
+docker-compose up
+```
+
+Or manually if you prefer:
+
+```bash
+# 1. Start Redis
+docker run -d -p 6379:6379 redis:7-alpine
+
+# 2. Python env
+python -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+
+# 3. Config
+cp .env.example .env
+# edit .env — add VT key and Slack webhook
+```
+
+Start the worker and API in separate terminals:
+
+```bash
+# Terminal 1
+celery -A tasks worker --loglevel=info
+
+# Terminal 2
 uvicorn main:app --reload --port 8000
 ```
 
-## testing it
+---
 
-you can just throw a fake alert at the webhook using curl to see the playbook run:
+### Fire a test alert
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/webhook/alert \
--H "Content-Type: application/json" \
--d '{
-    "source_ip": "185.156.73.53",
-    "alert_type": "Suspected SSH Brute Force",
+curl -X POST http://localhost:8000/api/v1/webhook/alert \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "malware",
+    "source": "crowdstrike",
     "severity": "high",
-    "description": "More than 50 failed login attempts in 1 minute."
-}'
+    "ip": "185.156.73.53",
+    "description": "Cobalt Strike beacon detected on host DESKTOP-4F9A"
+  }'
 ```
 
-watch the celery logs to see it pick up the task and run the vt enrichment.
+Watch the Celery terminal — you'll see the task pick up, hit VirusTotal, and fire the Slack message.
+
+---
+
+### Config (`.env`)
+
+```ini
+REDIS_URL=redis://localhost:6379/0
+VIRUSTOTAL_API_KEY=     # free tier works (500 req/day)
+SLACK_WEBHOOK_URL=      # https://hooks.slack.com/services/...
+```
+
+Both keys are optional for local testing — the playbooks degrade gracefully if they're missing.
+
+---
+
+### Adding a playbook
+
+`tasks.py` has a `run_playbook` function with a simple dispatch on `alert.type`. Add a branch:
+
+```python
+elif alert.type == "dns_exfil":
+    block_domain(alert.description)
+    send_slack(f":warning: DNS exfiltration detected: {alert.description}")
+```
+
+Celery handles retries, concurrency, and failure logging — you just write the response logic.
+
+---
+
+### Health check
+
+```bash
+curl http://localhost:8000/health
+# {"status": "ok", "worker": "connected"}
+```
+
+---
+
+### License
+
+MIT
