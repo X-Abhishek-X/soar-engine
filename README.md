@@ -19,26 +19,27 @@ IDS / SIEM
 └──────┬──────┘
        │ dequeue
        ▼
-┌─────────────────────────────────────┐
-│  Celery worker — run_playbook()     │
-│                                     │
-│  malware  →  VirusTotal lookup      │
-│  brute    →  Slack alert + block    │
-│  default  →  log + Slack notify     │
-└─────────────────────────────────────┘
+┌───────────────────────────────────────────┐
+│  Celery worker — process_security_alert() │
+│                                           │
+│  1. VirusTotal IP enrichment              │
+│  2. Firewall block if malicious_votes ≥ 3 │
+│  3. Slack notification with full context  │
+└───────────────────────────────────────────┘
 ```
 
 ---
 
 ### Running locally
 
-The fastest path is Docker — Redis + API + worker in one command:
+The fastest path is Docker — Redis, API, and worker in one command:
 
 ```bash
+cp .env.example .env   # add your API keys
 docker-compose up
 ```
 
-Or manually if you prefer:
+Or manually:
 
 ```bash
 # 1. Start Redis
@@ -50,7 +51,6 @@ pip install -r requirements.txt
 
 # 3. Config
 cp .env.example .env
-# edit .env — add VT key and Slack webhook
 ```
 
 Start the worker and API in separate terminals:
@@ -71,15 +71,14 @@ uvicorn main:app --reload --port 8000
 curl -X POST http://localhost:8000/api/v1/webhook/alert \
   -H "Content-Type: application/json" \
   -d '{
-    "type": "malware",
-    "source": "crowdstrike",
-    "severity": "high",
-    "ip": "185.156.73.53",
-    "description": "Cobalt Strike beacon detected on host DESKTOP-4F9A"
+    "source_ip":   "185.156.73.53",
+    "alert_type":  "SSH Brute Force",
+    "severity":    "high",
+    "description": "50+ failed SSH logins in 60 seconds from this IP"
   }'
 ```
 
-Watch the Celery terminal — you'll see the task pick up, hit VirusTotal, and fire the Slack message.
+Watch the Celery terminal — you'll see the task pick up, hit VirusTotal, and fire the Slack alert.
 
 ---
 
@@ -87,25 +86,25 @@ Watch the Celery terminal — you'll see the task pick up, hit VirusTotal, and f
 
 ```ini
 REDIS_URL=redis://localhost:6379/0
-VIRUSTOTAL_API_KEY=     # free tier works (500 req/day)
+VIRUSTOTAL_API_KEY=     # free tier (500 req/day). Leave blank to use mock responses.
 SLACK_WEBHOOK_URL=      # https://hooks.slack.com/services/...
 ```
 
-Both keys are optional for local testing — the playbooks degrade gracefully if they're missing.
+Both keys are optional for local testing — the playbook degrades gracefully if they're missing.
 
 ---
 
 ### Adding a playbook
 
-`tasks.py` has a `run_playbook` function with a simple dispatch on `alert.type`. Add a branch:
+`tasks.py` → `process_security_alert()` dispatches on `alert_data["alert_type"]`. Add a branch:
 
 ```python
-elif alert.type == "dns_exfil":
-    block_domain(alert.description)
-    send_slack(f":warning: DNS exfiltration detected: {alert.description}")
+if alert_type == "dns_exfil":
+    block_ip_on_firewall(source_ip)
+    send_slack_alert(f"DNS exfiltration detected from {source_ip}")
 ```
 
-Celery handles retries, concurrency, and failure logging — you just write the response logic.
+Celery handles retries, concurrency, and failure logging.
 
 ---
 
@@ -113,7 +112,7 @@ Celery handles retries, concurrency, and failure logging — you just write the 
 
 ```bash
 curl http://localhost:8000/health
-# {"status": "ok", "worker": "connected"}
+# {"status": "ok"}
 ```
 
 ---
