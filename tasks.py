@@ -1,5 +1,4 @@
 import requests
-import json
 from celery import Celery
 from config import settings
 
@@ -48,7 +47,7 @@ def block_ip_on_firewall(ip_address: str) -> bool:
     """Implement logic to block the IP address on local firewall or Docker network."""
     # In a real environment, this might make an API call to a Palo Alto/Fortinet, 
     # or execute a remote SSH command to add an iptables rule.
-    print(f"[ACTION CONTAINMENT] Executing automated block block for IP: {ip_address} on Firewall.")
+    print(f"[ACTION CONTAINMENT] Executing automated block for IP: {ip_address} on Firewall.")
     return True
 
 @celery_app.task(name="process_security_alert")
@@ -77,9 +76,9 @@ def process_security_alert(alert_data: dict):
         # Trigger containment
         success = block_ip_on_firewall(source_ip)
         if success:
-             containment_status = "Successfully Blocked"
+            containment_status = "Successfully Blocked"
         else:
-             containment_status = "Block Failed"
+            containment_status = "Block Failed"
     else:
         print(f"[-] Low risk: IP {source_ip} only has {malicious_score} malicious votes.")
         

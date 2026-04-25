@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import Optional
 from tasks import process_security_alert
@@ -18,7 +18,7 @@ async def receive_alert(alert: AlertPayload):
     Webhook endpoint to receive security alerts from IDS (like Suricata/Snort) or SIEM.
     """
     # Send the task to Celery asynchronously
-    task = process_security_alert.delay(alert.dict())
+    task = process_security_alert.delay(alert.model_dump())
     
     return {
         "status": "success",
