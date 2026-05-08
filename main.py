@@ -21,7 +21,7 @@ async def receive_alert(alert: AlertPayload):
     task = process_security_alert.delay(alert.model_dump())
     
     return {
-        "status": "success",
+        "status": "queued",
         "message": "Alert received and queued for automated response.",
         "task_id": task.id
     }
