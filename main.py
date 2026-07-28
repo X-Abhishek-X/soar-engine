@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from typing import Optional
 from tasks import process_security_alert
 
-app = FastAPI(title="Serverless SOAR Engine", version="1.1.0")
+app = FastAPI(title="Async SOAR Engine", version="1.1.0")
 
 class AlertPayload(BaseModel):
     source_ip: str
