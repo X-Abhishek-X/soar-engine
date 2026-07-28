@@ -4,8 +4,8 @@ from config import settings
 
 celery_app = Celery("tasks", broker=settings.REDIS_URL, backend=settings.REDIS_URL)
 
-# For testing without a Redis/Docker broker:
-celery_app.conf.task_always_eager = True
+# Set to True only for local tests with no broker running
+celery_app.conf.task_always_eager = False
 
 def get_virustotal_reputation(ip_address: str) -> dict:
     """Query VirusTotal for IP reputation."""
